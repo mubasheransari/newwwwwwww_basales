@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isSupervisor() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/supervisors/$(request.auth.uid));
+    }
+
+    // ✅ only for subcollections (stops/visits)
+    function isAssignedToPlan(planId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/journeyPlans/$(planId)).data.supervisorId == request.auth.uid;
+    }
+
+    match /admins/{adminId} {
+      allow get: if signedIn() && request.auth.uid == adminId;
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    match /locations/{locationId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /supervisors/{supervisorId} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == supervisorId);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if (signedIn() && request.auth.uid == userId) || isAdmin();
+      allow create, update, delete: if (signedIn() && request.auth.uid == userId) || isAdmin();
+
+      match /{document=**} {
+        allow read: if (signedIn() && request.auth.uid == userId) || isAdmin();
+        allow create, update, delete: if (signedIn() && request.auth.uid == userId) || isAdmin();
+      }
+    }
+
+    match /{path=**}/attendance/{docId} {
+      allow read: if isAdmin();
+      allow write: if signedIn();
+    }
+
+    match /{path=**}/sales/{docId} {
+      allow read: if isAdmin();
+      allow write: if signedIn();
+    }
+
+    // ✅ Journey Plans
+    match /journeyPlans/{planId} {
+
+      // ✅ IMPORTANT: use resource.data for the plan itself (no get())
+      allow get, list: if isAdmin() || (isSupervisor() && resource.data.supervisorId == request.auth.uid);
+
+      allow create, update, delete: if isAdmin();
+
+      match /stops/{stopId} {
+        allow read: if isAdmin() || (isSupervisor() && isAssignedToPlan(planId));
+        allow create, update, delete: if isAdmin();
+      }
+
+      match /visits/{visitId} {
+        allow read: if isAdmin() || (isSupervisor() && isAssignedToPlan(planId));
+
+        allow create: if isSupervisor()
+          && isAssignedToPlan(planId)
+          && request.resource.data.createdBy == request.auth.uid;
+
+        allow update: if isSupervisor()
+          && isAssignedToPlan(planId)
+          && resource.data.createdBy == request.auth.uid;
+
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
